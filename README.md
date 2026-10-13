@@ -274,7 +274,6 @@ The kill chain maps cleanly across the MITRE ATT&CK framework from Reconnaissanc
 
 ---
 
-## 🔑 Technical Notes
 
 ## 🔑 Technical Notes
 
@@ -328,4 +327,4 @@ Senior Field Service Technician → Cybersecurity Analyst
 
 ---
 
-*This repository is part of an active portfolio demonstrating hands-on cybersecurity skills. All lab work performed in isolated environments for educational purposes.*0
+*This repository is part of an active portfolio demonstrating hands-on cybersecurity skills. All lab work performed in isolated environments for educational purposes.*
